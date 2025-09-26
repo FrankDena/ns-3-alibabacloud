@@ -16,6 +16,7 @@
 #include <cmath>
 
 namespace ns3 {
+NS_OBJECT_ENSURE_REGISTERED(SwitchNode);
 
 TypeId SwitchNode::GetTypeId (void)
 {
@@ -27,6 +28,11 @@ TypeId SwitchNode::GetTypeId (void)
 			BooleanValue(false),
 			MakeBooleanAccessor(&SwitchNode::m_ecnEnabled),
 			MakeBooleanChecker())
+	.AddAttribute("PfcEnabled",
+			"Enable PFC.",
+			BooleanValue(true),
+            MakeBooleanAccessor(&SwitchNode::m_pfcEnabled),
+            MakeBooleanChecker())
 	.AddAttribute("CcMode",
 			"CC mode.",
 			UintegerValue(0),
@@ -92,18 +98,22 @@ int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch){
 }
 
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex){
+  if (m_pfcEnabled) {
 	Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
 	if (m_mmu->CheckShouldPause(inDev, qIndex)){
 		device->SendPfc(qIndex, 0);
 		m_mmu->SetPause(inDev, qIndex);
 	}
+  }
 }
 void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex){
+  if (m_pfcEnabled) {
 	Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
 	if (m_mmu->CheckShouldResume(inDev, qIndex)){
 		device->SendPfc(qIndex, 1);
 		m_mmu->SetResume(inDev, qIndex);
 	}
+  }
 }
 
 void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){

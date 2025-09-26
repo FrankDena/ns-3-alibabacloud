@@ -88,6 +88,11 @@ TypeId RdmaClient::GetTypeId(void) {
                         MakeUintegerChecker<uint32_t>())
           .AddAttribute("Lossy", "Lossy Flow", BooleanValue(false),
                         MakeBooleanAccessor(&RdmaClient::m_isLossy),
+                        MakeBooleanChecker())
+          .AddAttribute("PassiveDestroy",
+                        "Qp passively destroy when no more message",
+                        BooleanValue(false),
+                        MakeBooleanAccessor(&RdmaClient::m_passiveDestroy),
                         MakeBooleanChecker());
   return tid;
 }
@@ -113,7 +118,27 @@ void RdmaClient::SetSize(uint64_t size) { m_size = size; }
 void RdmaClient::Sent() {
 }
 
+void RdmaClient::PushMessagetoQp(uint64_t size) {
+  m_qp->PushMessage(
+      size,
+      MakeCallback(&RdmaClient::Finish, this),
+      MakeCallback(&RdmaClient::Sent, this));
+
+  Ptr<RdmaDriver> rdma = GetNode()->GetObject<RdmaDriver>();
+  Ptr<ns3::QbbNetDevice> nic = rdma->m_rdma->GetNicOfQp(m_qp);
+  nic->TriggerTransmit();
+}
+
+void RdmaClient::FinishQp() {
+  Ptr<Node> node = GetNode();
+  Ptr<RdmaDriver> rdma = node->GetObject<RdmaDriver>();
+  rdma->FinishQueuePair(m_qp);
+}
+
 void RdmaClient::Finish() {
+  if(m_passiveDestroy && m_qp->m_messages.size() == 0){
+    FinishQp();
+  }
 }
 
 void RdmaClient::SetFn(void (*msg_handler)(void *fun_arg), void *fun_arg) {
@@ -134,7 +159,7 @@ void RdmaClient::StartApplication(void) {
   // setup NVLS
   if(nvls_enable) rdma->EnbaleNVLS();
   else rdma->DisableNVLS();
-  rdma->AddQueuePair(src, dest, tag, m_size, m_pg, m_sip, m_dip, m_sport,
+  m_qp = rdma->AddQueuePair(src, dest, tag, m_size, m_pg, m_sip, m_dip, m_sport,
                      m_dport, m_win, m_baseRtt, m_isLossy,
                      MakeCallback(&RdmaClient::Finish, this),
                      MakeCallback(&RdmaClient::Sent, this));

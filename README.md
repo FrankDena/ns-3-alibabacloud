@@ -8,6 +8,8 @@ We have released a new dev branch [**dev/qp**](https://github.com/aliyun/ns-3-al
 3. **Optimized Scheduling Logic**: Adheres to the Max-Min principle, resolving issues of underutilization and unfairness in network resource allocation.
 4. **Decoupling of the CC Module**: For improved modularity and efficiency.
 
+Thank [**@MXtremist**](https://github.com/MXtremist) for contributing to this feature.
+
 Welcome to join the SimAI community chat groups, with the DingTalk group on the left and the WeChat group on the right.
 
 <div style="display: flex; justify-content: flex-start; align-items: center; gap: 20px; margin-left: 20px;">
