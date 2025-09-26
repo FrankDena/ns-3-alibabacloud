@@ -2,17 +2,17 @@
 
 This repository contains an NS3-based network simulator that acts as a network backend for [SimAI](https://github.com/aliyun/SimAI).
 
+**IMPROVEMENTS** This fork contains:
+1. **Enhanced Switch MMU**: Better Switch MMU model (derived from https://github.com/inet-tub/ns3-datacenter) to support both lossless and lossy traffic classes.
+2. **Lossy QPs Support**: Enables the creation of Lossy QPs that will use a special priority tag to steer packets into the switches' lossy buffer pool.
+3. **Selective Repeat**: Supports Selective Repeat implementation derived from Mellanox ConnectX-7 RNICs.
+4. **Packet Retransmission**: Adds support for packet retransmission after RTO expires.
+
 We have released a new dev branch [**dev/qp**](https://github.com/aliyun/ns-3-alibabacloud/tree/dev/qp) featuring the following enhancements (From maintainer [**@MXtremist**](https://github.com/MXtremist)):
 1. **QP Logic Support**: Enables creation and destruction of QPs based on actual RDMA logic, allowing multiple messages to be carried by a pair of QPs.
 2. **NIC CC Configuration**: Supports perIP or perQP settings for enhanced flexibility.
 3. **Optimized Scheduling Logic**: Adheres to the Max-Min principle, resolving issues of underutilization and unfairness in network resource allocation.
 4. **Decoupling of the CC Module**: For improved modularity and efficiency.
-
-This fork contains:
-1. Supports for lossy flows
-2. Selective Repeat (derived from Mellanox ConnectX-7 RNICs)
-3. Packet Retransmission after RTO expires
-4. Enhanced Switch MMU (derived from https://github.com/inet-tub/ns3-datacenter) to support both lossless and lossy traffic classes
 
 Welcome to join the SimAI community chat groups, with the DingTalk group on the left and the WeChat group on the right.
 
