@@ -2,7 +2,7 @@
 
 This repository contains an NS3-based network simulator that acts as a network backend for [SimAI](https://github.com/aliyun/SimAI).
 
-**IMPROVEMENTS** This fork contains:
+**IMPROVEMENTS.** This fork contains:
 1. **Enhanced Switch MMU**: Better Switch MMU model (derived from https://github.com/inet-tub/ns3-datacenter) to support both lossless and lossy traffic classes.
 2. **Lossy QPs Support**: Enables the creation of Lossy QPs that will use a special priority tag to steer packets into the switches' lossy buffer pool.
 3. **Selective Repeat**: Supports Selective Repeat implementation derived from Mellanox ConnectX-7 RNICs.
