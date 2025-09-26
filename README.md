@@ -8,7 +8,11 @@ We have released a new dev branch [**dev/qp**](https://github.com/aliyun/ns-3-al
 3. **Optimized Scheduling Logic**: Adheres to the Max-Min principle, resolving issues of underutilization and unfairness in network resource allocation.
 4. **Decoupling of the CC Module**: For improved modularity and efficiency.
 
-Thank [**@MXtremist**](https://github.com/MXtremist) for contributing to this feature.
+This fork contains:
+1. Supports for lossy flows
+2. Selective Repeat (derived from Mellanox ConnectX-7 RNICs)
+3. Packet Retransmission after RTO expires
+4. Enhanced Switch MMU (derived from https://github.com/inet-tub/ns3-datacenter) to support both lossless and lossy traffic classes
 
 Welcome to join the SimAI community chat groups, with the DingTalk group on the left and the WeChat group on the right.
 
