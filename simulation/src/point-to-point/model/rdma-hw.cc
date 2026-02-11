@@ -183,7 +183,17 @@ TypeId RdmaHw::GetTypeId (void)
 				"the number of gpus in a server, used for routing",
 				UintegerValue(1),
 				MakeUintegerAccessor(&RdmaHw::m_gpus_per_server),
-				MakeUintegerChecker<uint32_t>())	
+				MakeUintegerChecker<uint32_t>())
+		.AddAttribute("GPUsPerDC",
+				"the number of gpus in a DC, used for routing",
+				UintegerValue(1),
+				MakeUintegerAccessor(&RdmaHw::m_gpus_per_dc),
+				MakeUintegerChecker<uint32_t>())
+		.AddAttribute("GPUsNum",
+				"the total number of gpus, used for routing",
+				UintegerValue(1),
+				MakeUintegerAccessor(&RdmaHw::m_gpus_num),
+				MakeUintegerChecker<uint32_t>())		
 		.AddAttribute("TotalPauseTimes",
 				"The number of pause times to simulate PFC pause due to PCIe",
 				UintegerValue(0),
@@ -345,7 +355,15 @@ void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t si
 	last_qp_rate[key] = 0;
 
 	// set init variables
+	bool different_dcs = false;
+	if (m_enable_equal_bw && (src/m_gpus_per_dc != dest/m_gpus_per_dc) && (src<m_gpus_num && dest<m_gpus_num)) //different dcs and src and dst are both gpu (not nvswitch)
+		different_dcs=true;
 	DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
+	std::cout << "src: " << src << ", dst: " << dest << ", m_bps: " << m_bps.GetBitRate() << " enable_eq_bw: " << m_enable_equal_bw << std::endl;
+	if (different_dcs) {
+		m_bps = m_bps / m_gpus_per_server;
+		std::cout << "different dcs, adjust m_bps to: " << m_bps.GetBitRate() << " divided by m_gpus_per_server" << m_gpus_per_server<< std::endl;
+	}
 	qp->m_rate = m_bps;
 	qp->m_max_rate = m_bps;
 	if (m_cc_mode == 1){

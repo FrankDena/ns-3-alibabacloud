@@ -53,7 +53,10 @@ public:
 	std::unordered_map<uint64_t, Ptr<RdmaRxQueuePair> > m_rxQpMap; // mapping from uint64_t to rx qp
 	std::unordered_map<uint32_t, std::vector<int> > m_rtTable; // map from ip address (u32) to possible ECMP port (index of dev)
 	std::unordered_map<uint32_t, std::vector<int> > m_rtTable_nxthop_nvswitch; // map from ip address (u32) to possible ECMP port (index of dev) connected to nvswitch
-	uint32_t m_gpus_per_server; // uesed for routing; if src and dst in the same server, then communicate by nvswitch.
+	uint32_t m_gpus_per_server; // used for routing; if src and dst in the same server, then communicate by nvswitch.
+	uint32_t m_gpus_per_dc; // used for routing; if src and dst in different dcs, then ensure equal bw between inter-dc flows.
+	uint32_t m_gpus_num; // used for routing; total number of gpus.
+	uint32_t m_enable_equal_bw; // whether to enable equal bandwidth for inter-dc flows, used for routing.
 	uint32_t nvls_enable;
 	std::set<uint32_t> nvswitch_set;
 	Time m_last_cnp_time = Time(0);
