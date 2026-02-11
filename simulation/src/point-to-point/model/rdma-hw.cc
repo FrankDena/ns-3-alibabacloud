@@ -193,6 +193,11 @@ TypeId RdmaHw::GetTypeId (void)
 				"the total number of gpus, used for routing",
 				UintegerValue(1),
 				MakeUintegerAccessor(&RdmaHw::m_gpus_num),
+				MakeUintegerChecker<uint32_t>())	
+		.AddAttribute("EnableEqualBw",
+				"enable equal bandwidth allocation for inter-dc flows",
+				UintegerValue(0),
+				MakeUintegerAccessor(&RdmaHw::m_enable_equal_bw),
 				MakeUintegerChecker<uint32_t>())		
 		.AddAttribute("TotalPauseTimes",
 				"The number of pause times to simulate PFC pause due to PCIe",
