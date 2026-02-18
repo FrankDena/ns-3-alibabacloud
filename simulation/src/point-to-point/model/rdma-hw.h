@@ -57,6 +57,8 @@ public:
 	uint32_t m_gpus_per_dc; // used for routing; if src and dst in different dcs, then ensure equal bw between inter-dc flows.
 	uint32_t m_gpus_num; // used for routing; total number of gpus.
 	uint32_t m_enable_equal_bw; // whether to enable equal bandwidth for inter-dc flows, used for routing.
+	DataRate m_inter_dc_bps; // bandwidth between DCs.
+	bool m_is_hierarchical; // whether the simulation is hierarchical, used for equal bandwidth computation.
 	uint32_t nvls_enable;
 	std::set<uint32_t> nvswitch_set;
 	Time m_last_cnp_time = Time(0);
