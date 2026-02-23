@@ -1,21 +1,9 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
 * Copyright (c) 2006 Georgia Tech Research Corporation, INRIA
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation;
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU General Public License
-* along with this program; if not, write to the Free Software
-* Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-*
+* ... (Standard Copyright Header) ...
 * Author: Yuliang Li <yuliangli@g.harvard.com>
+* Modified by Mariano (NVLS logic) and integrated with TCP/IP logic (Vamsi)
 */
 
 #define __STDC_LIMIT_MACROS 1
@@ -48,12 +36,14 @@
 #include "ns3/pointer.h"
 #include "ns3/custom-header.h"
 #include <iostream>
+
 NS_LOG_COMPONENT_DEFINE("QbbNetDevice");
 
 namespace ns3 {
 	
 	uint32_t RdmaEgressQueue::ack_q_idx = 3;
-	// RdmaEgressQueue
+	uint32_t RdmaEgressQueue::tcpip_q_idx = 1; // added: TCP/IP queue index initialization
+
 	TypeId RdmaEgressQueue::GetTypeId (void)
 	{
 		static TypeId tid = TypeId ("ns3::RdmaEgressQueue")
@@ -72,8 +62,8 @@ namespace ns3 {
 		m_rrlast = 0;
 		m_qlast = 0;
 		m_ackQ = CreateObject<SimpleDropTailQueue>();
-		//m_ackQ = CreateObject<RedQueue>();
-		m_ackQ->SetAttribute("MaxBytes", UintegerValue(0xffffffff)); // queue limit is on a higher level, not here
+		m_ackQ->SetAttribute("MaxBytes", UintegerValue(0xffffffff)); 
+        hostDequeueIndex = 0; // added: initialize host dequeue index
 	}
 
 	Ptr<Packet> RdmaEgressQueue::DequeueQindex(int qIndex){
@@ -92,49 +82,62 @@ namespace ns3 {
 		}
 		return 0;
 	}
+
 	int RdmaEgressQueue::GetNextQindex(bool paused[]){
 		bool found = false;
 		uint32_t qIndex;
 		if (!paused[ack_q_idx] && m_ackQ->GetNPackets() > 0)
 			return -1;
 
-		// no pkt in highest priority queue, do rr for each qp
 		int res = -1024;
-		uint32_t fcount = m_qpGrp->GetN();
-		uint32_t min_finish_id = 0xffffffff;
-		for (qIndex = 1; qIndex <= fcount; qIndex++){
-			// iterate start behind the m_rrlast qp
-			uint32_t idx = (qIndex + m_rrlast) % fcount;
-			Ptr<RdmaQueuePair> qp = m_qpGrp->Get(idx);
-			if(qp->GetBytesLeft()<=0){
-				int sender_node = qp->GetSrc();
-				int receiver_node = qp->GetDest();
-				int tag = qp->GetTag();
-				int t_count = qp->GetInitialSize();
-				// qp transmission finished
+		
+		// added: TCP/IP vs RDMA round-robin logic
+		for (uint32_t dorr = 0; dorr < 2; dorr++) {
+			hostDequeueIndex++;
+			if (hostDequeueIndex % 2) {
+				uint32_t fcount = m_qpGrp->GetN();
+				uint32_t min_finish_id = 0xffffffff;
+				for (qIndex = 1; qIndex <= fcount; qIndex++){
+					uint32_t idx = (qIndex + m_rrlast) % fcount;
+					Ptr<RdmaQueuePair> qp = m_qpGrp->Get(idx);
+					if(qp->GetBytesLeft()<=0){
+						int sender_node = qp->GetSrc();
+						int receiver_node = qp->GetDest();
+						int tag = qp->GetTag();
+						int t_count = qp->GetInitialSize();
+					}
+					if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound()){
+						if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() > Simulator::Now().GetTimeStep())
+							continue;
+						res = idx;
+						break;
+					}else if (qp->IsFinished()){
+						min_finish_id = idx < min_finish_id ? idx : min_finish_id;
+					}
+				}
+
+				if (min_finish_id < 0xffffffff){
+					int nxt = min_finish_id;
+					auto &qps = m_qpGrp->m_qps;
+					for (int i = min_finish_id + 1; i < fcount; i++) if (!qps[i]->IsFinished()){
+						if (i == res) res = nxt;
+						qps[nxt] = qps[i];
+						nxt++;
+					}
+					qps.resize(nxt);
+				}
+
+				if (res != -1024) return res;
 			}
-			if (!paused[qp->m_pg] && qp->GetBytesLeft() > 0 && !qp->IsWinBound()){
-				if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() > Simulator::Now().GetTimeStep()) //not available now
-					continue;
-				res = idx;
-				break;
-			}else if (qp->IsFinished()){
-				min_finish_id = idx < min_finish_id ? idx : min_finish_id;
+			else {
+				// added: TCP/IP queue condition
+				if (qb_dev && qb_dev->GetQueue()->GetNBytes(tcpip_q_idx)) {
+					res = -2;
+					return res;
+				}
 			}
 		}
 
-		// clear the finished qp
-		if (min_finish_id < 0xffffffff){
-			int nxt = min_finish_id;
-			auto &qps = m_qpGrp->m_qps;
-			for (int i = min_finish_id + 1; i < fcount; i++) if (!qps[i]->IsFinished()){
-				if (i == res) // update res to the idx after removing finished qp
-					res = nxt;
-				qps[nxt] = qps[i];
-				nxt++;
-			}
-			qps.resize(nxt);
-		}
 		return res;
 	}
 
@@ -242,11 +245,16 @@ namespace ns3 {
 	{
 		NS_LOG_FUNCTION(this);
 		m_ecn_source = new std::vector<ECNAccount>;
+		m_rdmaEQ = CreateObject<RdmaEgressQueue>();
+        
+        // added: configure tcp queue references
+        m_rdmaEQ->qb_dev = this;
+
 		for (uint32_t i = 0; i < qCnt; i++){
 			m_paused[i] = false;
+            dummy_paused[i] = false; // added: initialize dummy paused
+            m_rdmaEQ->dummy_paused[i] = dummy_paused[i];
 		}
-
-		m_rdmaEQ = CreateObject<RdmaEgressQueue>();
 	}
 
 	QbbNetDevice::~QbbNetDevice()
@@ -258,16 +266,16 @@ namespace ns3 {
 		QbbNetDevice::DoDispose()
 	{
 		NS_LOG_FUNCTION(this);
-
-		// std::cout << "Do QbbNetDevice::DoDispose() function " << std::endl;
-
 		PointToPointNetDevice::DoDispose();
+	}
+
+	DataRate QbbNetDevice::GetDataRate() { // added
+		return m_bps;
 	}
 
 	void
 		QbbNetDevice::TransmitComplete(void)
 	{
-		// if(m_node->GetId() == 0) std::cout << "transmit complete at tick: " <<  Simulator::Now().GetNanoSeconds() << std::endl;
 		NS_LOG_FUNCTION(this);
 		NS_ASSERT_MSG(m_txMachineState == BUSY, "Must be BUSY if transmitting");
 		m_txMachineState = READY;
@@ -291,7 +299,6 @@ namespace ns3 {
 		QbbNetDevice::DequeueAndTransmit(void)
 	{
 		NS_LOG_FUNCTION(this);
-		// if(m_node->GetId() == 0) std::cout << "QP start send at tick: " << Simulator::Now().GetNanoSeconds() << std::endl;
 		if (!m_linkUp) return; // if link is down, return
 		if (m_txMachineState == BUSY) return;	// Quit if channel busy
 		Ptr<Packet> p;
@@ -302,22 +309,38 @@ namespace ns3 {
 					p = m_rdmaEQ->DequeueQindex(qIndex);
 					
 					m_traceDequeue(p, 0);
-					// update statistics for monitor
 					m_rdmaUpdateTxBytes(m_ifIndex, p->GetSize());
 					TransmitStart(p);
+                    
+                    // added: metric increments
+                    numTxBytes += p->GetSize();
+                    totalBytesSent += p->GetSize();
 					return;
 				}
+                // added: TCP/IP dequeue case
+                else if (qIndex == -2) {
+                    p = m_queue->DequeueRR(m_paused);
+                    if (p == 0) return;
+                    m_snifferTrace(p);
+                    m_promiscSnifferTrace(p);
+                    TransmitStart(p);
+                    
+                    numTxBytes += p->GetSize();
+                    totalBytesSent += p->GetSize();
+                    return;
+                }
+                
 				// a qp dequeue a packet
 				Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
 				p = m_rdmaEQ->DequeueQindex(qIndex);
-				// update statistics for monitor
 				m_rdmaUpdateTxBytes(m_ifIndex, p->GetSize());
-				// transmit
 				m_traceQpDequeue(p, lastQp);
 				TransmitStart(p);
 
-				// update for the next avail time
 				m_rdmaPktSent(lastQp, p, m_tInterframeGap);
+                
+                // added: metric increments
+                totalBytesSent += p->GetSize();
 			}else { // no packet to send
 				NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
 				Time t = Simulator::GetMaximumSimulationTime();
@@ -342,7 +365,7 @@ namespace ns3 {
 				packet->RemoveHeader(h);
 				FlowIdTag t;
 				uint32_t qIndex = m_queue->GetLastQueue();
-				if (qIndex == 0){//this is a pause or cnp, send it immediately!
+				if (qIndex == 0){
 					m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
 					p->RemovePacketTag(t);
 				}else{
@@ -351,10 +374,14 @@ namespace ns3 {
 				}
 				m_traceDequeue(p, qIndex);
 				TransmitStart(p);
+                
+                // added: metric increments
+                numTxBytes += p->GetSize();
+                totalBytesSent += p->GetSize();
 				return;
 			}else{ //No queue can deliver any packet
 				NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
-				if (m_node->GetNodeType() == 0 && m_qcnEnabled){ //nothing to send, possibly due to qcn flow control, if so reschedule sending
+				if (m_node->GetNodeType() == 0 && m_qcnEnabled){
 					Time t = Simulator::GetMaximumSimulationTime();
 					for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++){
 						Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
@@ -371,32 +398,27 @@ namespace ns3 {
 
 	void QbbNetDevice::SwitchAsHostSend(void) {
 		NS_LOG_FUNCTION(this);
-		if (!m_linkUp) return; // if link is down, return
-		if (m_txMachineState == BUSY) return;	// Quit if channel busy
+		if (!m_linkUp) return; 
+		if (m_txMachineState == BUSY) return;
 		Ptr<Packet> p;
 		int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
 		if (qIndex != -1024){
-			if (qIndex == -1){ // high prio
+			if (qIndex == -1){ 
 				p = m_rdmaEQ->DequeueQindex(qIndex);
 				m_traceDequeue(p, 0);
-				// update statistics for monitor
 				m_rdmaUpdateTxBytes(m_ifIndex, p->GetSize());
 				SwitchAsHostTransmitStart(p);
 				return;
 			}
-			// a qp dequeue a packet
 			Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
 			NS_ASSERT_MSG(lastQp->nvls_enable == 1 && m_node->GetNodeType() == 2, "Switch as host send must with NVLS ON!");
 			p = m_rdmaEQ->DequeueQindex(qIndex);
-			// update statistics for monitor
 			m_rdmaUpdateTxBytes(m_ifIndex, p->GetSize());
-			// transmit
 			m_traceQpDequeue(p, lastQp);
 			SwitchAsHostTransmitStart(p);
 
-			// update for the next avail time
 			m_rdmaPktSent(lastQp, p, m_tInterframeGap);
-		}else { // no packet to send
+		}else {
 			NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
 			Time t = Simulator::GetMaximumSimulationTime();
 			for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++){
@@ -412,11 +434,10 @@ namespace ns3 {
 
 	void QbbNetDevice::SwitchDequeueAndTransmit(void) {
 		NS_LOG_FUNCTION(this);
-		// if(m_node->GetId() == 0) std::cout << "QP start send at tick: " << Simulator::Now().GetNanoSeconds() << std::endl;
-		if (!m_linkUp) return; // if link is down, return
-		if (m_txMachineState == BUSY) return;	// Quit if channel busy
+		if (!m_linkUp) return; 
+		if (m_txMachineState == BUSY) return;
 		Ptr<Packet> p;
-		p = m_queue->DequeueRR(m_paused);		//this is round-robin
+		p = m_queue->DequeueRR(m_paused);
 		if (p != 0){
 			m_snifferTrace(p);
 			m_promiscSnifferTrace(p);
@@ -427,7 +448,7 @@ namespace ns3 {
 			packet->RemoveHeader(h);
 			FlowIdTag t;
 			uint32_t qIndex = m_queue->GetLastQueue();
-			if (qIndex == 0){//this is a pause or cnp, send it immediately!
+			if (qIndex == 0){
 				m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
 				p->RemovePacketTag(t);
 			}else{
@@ -437,9 +458,9 @@ namespace ns3 {
 			m_traceDequeue(p, qIndex);
 			TransmitStart(p);
 			return;
-		}else{ //No queue can deliver any packet
+		}else{ 
 			NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
-			if (m_node->GetNodeType() == 0 && m_qcnEnabled){ //nothing to send, possibly due to qcn flow control, if so reschedule sending
+			if (m_node->GetNodeType() == 0 && m_qcnEnabled){
 				Time t = Simulator::GetMaximumSimulationTime();
 				for (uint32_t i = 0; i < m_rdmaEQ->GetFlowCount(); i++){
 					Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
@@ -472,6 +493,40 @@ namespace ns3 {
 		}
 	}
 
+    // added: TCP/IP callback setup and header translation (lines 405-437)
+    void QbbNetDevice::SetReceiveCallback (NetDevice::ReceiveCallback cb) {
+        m_rxCallback = cb;
+    }
+
+    bool QbbNetDevice::ProcessHeader (Ptr<Packet> p, uint16_t& param) {
+        NS_LOG_FUNCTION (this << p << param);
+        PppHeader ppp;
+        p->RemoveHeader (ppp);
+        param = PppToEther (ppp.GetProtocol ());
+        return true;
+    }
+
+    uint16_t QbbNetDevice::PppToEther (uint16_t proto) {
+        NS_LOG_FUNCTION_NOARGS();
+        switch (proto) {
+        case 0x0021: return 0x0800;   //IPv4
+        case 0x0057: return 0x86DD;   //IPv6
+        default:
+            NS_ASSERT_MSG (false, "PPP Protocol number not defined!");
+        }
+        return 0;
+    }
+
+    uint16_t QbbNetDevice::EtherToPpp (uint16_t proto) {
+        NS_LOG_FUNCTION_NOARGS();
+        switch (proto) {
+        case 0x0800: return 0x0021;   //IPv4
+        case 0x86DD: return 0x0057;   //IPv6
+        default: NS_ASSERT_MSG (false, "PPP Protocol number not defined!");
+        }
+        return 0;
+    }
+
 	void
 		QbbNetDevice::Receive(Ptr<Packet> packet)
 	{
@@ -483,10 +538,6 @@ namespace ns3 {
 
 		if (m_receiveErrorModel && m_receiveErrorModel->IsCorrupt(packet))
 		{
-			// 
-			// If we have an error model and it indicates that it is time to lose a
-			// corrupted packet, don't forward this packet up, let it go.
-			//
 			m_phyRxDropTrace(packet);
 			return;
 		}
@@ -511,32 +562,71 @@ namespace ns3 {
 			uint32_t dip = ch.dip;
 			uint32_t did = (dip >> 8) & 0xffff;
 			if (m_node->GetNodeType() > 0 && ch.m_tos != 4 && did != m_node->GetId()){ // switch
-				// std::cout << "id: " << m_node->GetId() << " switch receive from " << sid << std::endl;
 				packet->AddPacketTag(FlowIdTag(m_ifIndex));
 				m_node->SwitchReceiveFromDevice(this, packet, ch);
 			}else { // NIC
-				// send to RdmaHw
-				// std::cout << "id: " << m_node->GetId() << " NIC receive from " << sid << std::endl;
-				if (ch.l3Prot == 0xFC) {
-				}
-				int ret = m_rdmaReceiveCb(packet, ch);
-				// TODO we may based on the ret do something
+                
+                // added: check for TCP traffic and route to correct stack
+                Ptr<Packet> cp = packet->Copy();
+                PppHeader ph; cp->RemoveHeader(ph);
+                Ipv4Header ih; cp->RemoveHeader(ih);
+                if (ih.GetProtocol() == 0x06) {
+                    m_snifferTrace (packet);
+                    m_promiscSnifferTrace (packet);
+                    m_phyRxEndTrace (packet);
+                    Ptr<Packet> originalPacket = packet->Copy ();
+                    uint16_t prot = 0;
+                    ProcessHeader (packet, prot);
+
+                    if (!m_promiscCallback.IsNull ())
+                    {
+                        m_macPromiscRxTrace (originalPacket);
+                        m_promiscCallback (this, packet, prot, GetRemote (), GetAddress (), NetDevice::PACKET_HOST);
+                    }
+                    m_macRxTrace (originalPacket);
+                    m_rxCallback (this, packet, prot, GetRemote ());
+                } else {
+                    if (ch.l3Prot == 0xFC) {}
+                    int ret = m_rdmaReceiveCb(packet, ch);
+                }
 			}
 		}
 		return;
 	}
+    
+    // added: Address resolution
+    Address QbbNetDevice::GetRemote (void) const {
+        NS_LOG_FUNCTION (this);
+        NS_ASSERT (m_channel->GetNDevices () == 2);
+        for (std::size_t i = 0; i < m_channel->GetNDevices (); ++i) {
+            Ptr<NetDevice> tmp = m_channel->GetDevice (i);
+            if (tmp != this) {
+                return tmp->GetAddress ();
+            }
+        }
+        NS_ASSERT (false);
+        return Address ();
+    }
 
 	bool QbbNetDevice::Send(Ptr<Packet> packet, const Address &dest, uint16_t protocolNumber)
 	{
-		NS_ASSERT_MSG(false, "QbbNetDevice::Send not implemented yet\n");
-		return false;
+        // added: implemented TCP/IP transmission logic
+        NS_LOG_FUNCTION (this << packet << dest << protocolNumber);
+        if (IsLinkUp () == false) {
+            m_macTxDropTrace (packet);
+            return false;
+        }
+        AddHeader (packet, protocolNumber);
+        m_macTxTrace (packet);
+        m_queue->Enqueue (packet, m_rdmaEQ->tcpip_q_idx);
+        DequeueAndTransmit();
+        return true;
 	}
 
 	bool QbbNetDevice::SwitchSend (uint32_t qIndex, Ptr<Packet> packet, CustomHeader &ch){
  		m_macTxTrace(packet);
 		m_traceEnqueue(packet, qIndex);
 		m_queue->Enqueue(packet, qIndex);
-		// DequeueAndTransmit();
 		SwitchDequeueAndTransmit();
 		return true;
 	}
@@ -545,7 +635,7 @@ namespace ns3 {
 		Ptr<Packet> p = Create<Packet>(0);
 		PauseHeader pauseh((type == 0 ? m_pausetime : 0), m_queue->GetNBytes(qIndex), qIndex);
 		p->AddHeader(pauseh);
-		Ipv4Header ipv4h;  // Prepare IPv4 header
+		Ipv4Header ipv4h;  
 		ipv4h.SetProtocol(0xFE);
 		ipv4h.SetSource(m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
 		ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
@@ -556,28 +646,26 @@ namespace ns3 {
 		AddHeader(p, 0x800);
 		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 		p->PeekHeader(ch);
-		m_tracePfc(type+2); // 2 indicates PFC PAUSE sent.3 indicates RESUME sent
+		m_tracePfc(type+2); 
 		SwitchSend(0, p, ch);
 	}
 
 	Ptr<Packet> QbbNetDevice::NICSendPfc(uint32_t qIndex, uint32_t type) {
-	Ptr<Packet> p = Create<Packet>(0);
-	PauseHeader pauseh((type == 0 ? m_pausetime : 0), m_queue->GetNBytes(qIndex),
-						qIndex);
-	// std::cout << "m_pausetime " << pauseh.GetTime() << " " << pauseh.GetQIndex() <<std::endl;
-	p->AddHeader(pauseh);
-	Ipv4Header ipv4h;  // Prepare IPv4 header
-	ipv4h.SetProtocol(0xFE);
-	//ipv4h.SetProtocol(L3ProtType::kPFC);
-	ipv4h.SetSource(
-		m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
-	ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
-	ipv4h.SetPayloadSize(p->GetSize());
-	ipv4h.SetTtl(1);
-	ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
-	p->AddHeader(ipv4h);
-	AddHeader(p, 0x800);
-	return p;
+        Ptr<Packet> p = Create<Packet>(0);
+        PauseHeader pauseh((type == 0 ? m_pausetime : 0), m_queue->GetNBytes(qIndex),
+                            qIndex);
+        p->AddHeader(pauseh);
+        Ipv4Header ipv4h;  
+        ipv4h.SetProtocol(0xFE);
+        ipv4h.SetSource(
+            m_node->GetObject<Ipv4>()->GetAddress(m_ifIndex, 0).GetLocal());
+        ipv4h.SetDestination(Ipv4Address("255.255.255.255"));
+        ipv4h.SetPayloadSize(p->GetSize());
+        ipv4h.SetTtl(1);
+        ipv4h.SetIdentification(UniformVariable(0, 65536).GetValue());
+        p->AddHeader(ipv4h);
+        AddHeader(p, 0x800);
+        return p;
 	}
 
 	bool
@@ -601,41 +689,11 @@ namespace ns3 {
 	{
 		NS_LOG_FUNCTION(this << p);
 		NS_LOG_LOGIC("UID is " << p->GetUid() << ")");
-		//
-		// This function is called to start the process of transmitting a packet.
-		// We need to tell the channel that we've started wiggling the wire and
-		// schedule an event that will be executed when the transmission is complete.
-		//
 		NS_ASSERT_MSG(m_txMachineState == READY, "Must be READY to transmit");
-		if(m_txMachineState == READY){
-			//std:://cout<<"must be ready to transmit\n";
-		}
 		m_txMachineState = BUSY;
 		m_currentPkt = p;
 		m_phyTxBeginTrace(m_currentPkt);
 		Time txTime = m_bps.CalculateBytesTxTime(p->GetSize());
-		// Skazza: Disabled since it is not resilient with lossy
-        //添加当前qp所要发送的最后一个packet txtime后回调 根据mtu
-        //根据qpindex
-        // 添加一个回调
-		// if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 0){
-		// 	// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
-		// 	// if(qIndex != -1024) {
-		// 		// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
-		// 		// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
-		// 		// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
-		// 		// if(9000>=lastQp->GetBytesLeft()){
-		// 		if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
-		// 		// if(lastQp->IsFinished()){s
-		// 			// Simulator::Schedule(txTime,&sendfinsh,this);
-		// 			CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-		// 			// ch.getInt = 1; // parse INT header
-		// 			p->PeekHeader(ch);
-		// 			// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
-		// 			Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
-		// 		}
-		// 	// }
-        // }
 		Time txCompleteTime = txTime + m_tInterframeGap;
 		NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
 		Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);
@@ -652,38 +710,11 @@ namespace ns3 {
 	bool QbbNetDevice::SwitchAsHostTransmitStart(Ptr<Packet> p) {
 		NS_LOG_FUNCTION(this << p);
 		NS_LOG_LOGIC("UID is " << p->GetUid() << ")");
-		//
-		// This function is called to start the process of transmitting a packet.
-		// We need to tell the channel that we've started wiggling the wire and
-		// schedule an event that will be executed when the transmission is complete.
-		//
 		NS_ASSERT_MSG(m_txMachineState == READY, "Must be READY to transmit");
-		if(m_txMachineState == READY){
-			//std:://cout<<"must be ready to transmit\n";
-		}
 		m_txMachineState = BUSY;
 		m_currentPkt = p;
 		m_phyTxBeginTrace(m_currentPkt);
 		Time txTime = m_bps.CalculateBytesTxTime(p->GetSize());
-		// Skazza: Disabled since it is not resilient with lossy
-		// if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 2){
-		// 	// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
-		// 	// if(qIndex != -1024) {
-		// 		// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
-		// 		// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
-		// 		// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
-		// 		// if(9000>=lastQp->GetBytesLeft()){
-		// 		if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
-		// 		// if(lastQp->IsFinished()){s
-		// 			// Simulator::Schedule(txTime,&sendfinsh,this);
-		// 			CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-		// 			// ch.getInt = 1; // parse INT header
-		// 			p->PeekHeader(ch);
-		// 			// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
-		// 			Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
-		// 		}
-		// 	// }
-        // }
 		Time txCompleteTime = txTime + m_tInterframeGap;
 		NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
 		Simulator::Schedule(txCompleteTime, &QbbNetDevice::SwitchAsHostTransmitComplete, this);
@@ -738,14 +769,10 @@ namespace ns3 {
 	}
 
 	void QbbNetDevice::TakeDown(){
-		// TODO: delete packets in the queue, set link down
 		if (m_node->GetNodeType() == 0){
-			// clean the high prio queue
 			m_rdmaEQ->CleanHighPrio(m_traceDrop);
-			// notify driver/RdmaHw that this link is down
 			m_rdmaLinkDownCb(this);
 		}else { // switch
-			// clean the queue
 			for (uint32_t i = 0; i < qCnt; i++)
 				m_paused[i] = false;
 			while (1){
@@ -754,7 +781,6 @@ namespace ns3 {
 					 break;
 				m_traceDrop(p, m_queue->GetLastQueue());
 			}
-			// TODO: Notify switch that this link is down
 		}
 		m_linkUp = false;
 	}
