@@ -75,6 +75,9 @@ BulkSendApplication::GetTypeId (void)
                    BooleanValue (false),
                    MakeBooleanAccessor (&BulkSendApplication::m_enableSeqTsSizeHeader),
                    MakeBooleanChecker ())
+    .AddAttribute ("InitialCwnd", "InitialCwnd", UintegerValue (10),
+                  MakeUintegerAccessor (&BulkSendApplication::InitialCwnd),
+                  MakeUintegerChecker<uint32_t> ())
     .AddTraceSource ("Tx", "A new packet is sent",
                      MakeTraceSourceAccessor (&BulkSendApplication::m_txTrace),
                      "ns3::Packet::TracedCallback")

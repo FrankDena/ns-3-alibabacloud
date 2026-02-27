@@ -132,6 +132,9 @@ private:
   Ptr<Packet>     m_unsentPacket; //!< Variable to cache unsent packet
   bool            m_enableSeqTsSizeHeader {false}; //!< Enable or disable the SeqTsSizeHeader
 
+  //modified
+  uint32_t        InitialCwnd;
+
   /// Traced Callback: sent packets
   TracedCallback<Ptr<const Packet> > m_txTrace;
 
