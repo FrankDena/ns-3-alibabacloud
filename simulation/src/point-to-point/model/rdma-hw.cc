@@ -371,7 +371,6 @@ void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t si
 
 	// set init variables
 	DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
-	std::cout << "src: " << src << ", dst: " << dest << ", m_bps: " << m_bps.GetBitRate() << " enable_eq_bw: " << m_enable_equal_bw << std::endl;
 
 	//If equal_bw is enabled, and src and dst are in different dcs, and src and dst are both gpu (not nvswitch), then adjust the initial bandwidth to ensure equal bandwidth between inter-dc flows.
 	if (m_enable_equal_bw && (src/m_gpus_per_dc != dest/m_gpus_per_dc) && (src<m_gpus_num && dest<m_gpus_num)) {//different dcs and src and dst are both gpu (not nvswitch)
